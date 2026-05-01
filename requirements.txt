@@ -5,3 +5,5 @@ streamlit-folium
 plotly
 branca
 pyogrio
+matplotlib
+mapclassify
