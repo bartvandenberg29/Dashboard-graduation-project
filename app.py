@@ -5,28 +5,93 @@ import branca
 from streamlit_folium import st_folium
 import plotly.express as px
 
+# 1. Pagina instellingen
 st.set_page_config(layout="wide", page_title="Suitability for Senior Housing Development")
 
+# 2. De functies voor het laden (nu met een 'is_strict' optie)
 @st.cache_data
-def load_data():
-    gdf = gpd.read_file("Candidate plots suitability layer.gpkg")
-    return gdf.to_crs(epsg=4326)
+def load_data(is_strict):
+    # Kies het bestand op basis van de schakelaar
+    if is_strict:
+        filename = "Candidate plots suitability layer RC.gpkg"
+    else:
+        filename = "Candidate plots suitability layer.gpkg"
+    
+    try:
+        gdf = gpd.read_file(filename)
+        return gdf.to_crs(epsg=4326)
+    except Exception as e:
+        st.error(f"Bestand niet gevonden: {filename}")
+        return None
 
 @st.cache_data
 def load_outline():
-    # Vervang 'Gemeentegrens_Eindhoven.gpkg' door de echte bestandsnaam van je outline-laag
-    outline_gdf = gpd.read_file("Eindhoven.gpkg")
-    return outline_gdf.to_crs(epsg=4326)
+    return gpd.read_file("Eindhoven.gpkg").to_crs(epsg=4326)
+
+# 3. DE SCHAKELAAR (De Toggle)
+# Deze moet BOVEN 'df = load_data' staan
+st.sidebar.header("Model Settings")
+strict_mode = st.sidebar.toggle(
+    "Apply strict academic scenario (Consistency Ratio < 0.1)", 
+    value=False,
+    help="Switch between Consistency Ratio < 0.2 (Baseline) and < 0.1 (Strict Academic)."
+)
+
+# 4. DATA LADEN
+# We geven 'strict_mode' (True of False) mee aan de functie
+df = load_data(strict_mode)
+
+if df is not None:
+    # 1. Maak een lijst van de hoofdnamen waarop je wilt groeperen
+    stadsdeel_namen = ['Woensel', 'Gestel', 'Stratum', 'Strijp', 'Tongelre', 'Acht', 'Centrum']
+
+    # 2. Functie om de naam te 'schonen'
+    def groepeer_stadsdeel(ref):
+        ref = str(ref)
+        for naam in stadsdeel_namen:
+            if naam.lower() in ref.lower(): # We checken of de naam in de referentie zit
+                return naam
+        return "Overig" # Als er geen match is
+
+    # 3. Pas de functie toe op de kolom
+    df['Gegroepeerd_Stadsdeel'] = df['nationalCadastralReference'].apply(groepeer_stadsdeel)
+
+    # 4. Maak het filter in de sidebar
+unieke_groepen = sorted(df['Gegroepeerd_Stadsdeel'].unique().tolist())
+    
+    # Gebruik een tijdelijke variabele voor de input van de gebruiker
+user_choice = st.sidebar.multiselect(
+        "Filter op Stadsdeel:",
+        options=unieke_groepen,
+        default=unieke_groepen
+    )
+
+    # De 'beveiliging': als de gebruiker alles wist, pakken we alle wijken.
+    # Hierdoor wordt 'geselecteerde_groepen' nooit leeg.
+if not user_choice:
+        geselecteerde_groepen = unieke_groepen
+        st.sidebar.warning("Selection cannot be empty. Showing all neighborhoods.")
+else:
+        geselecteerde_groepen = user_choice
+
+    # Filter de dataframe met de gegarandeerde selectie
+df = df[df['Gegroepeerd_Stadsdeel'].isin(geselecteerde_groepen)]
 
 outline = load_outline()
 
-df = load_data()
+if 'last_strict_mode' not in st.session_state:
+    st.session_state.last_strict_mode = strict_mode
+# Wanneer de toggle wordt veranderd, herinitialiseer de gewichten
+if st.session_state.last_strict_mode != strict_mode:
+    st.session_state.clear()   # Alle sessie-waarden resetten (inclusief sliders)
+    st.session_state.last_strict_mode = strict_mode
+    st.rerun()    # Herlaad app met nieuwe data en defaults
 
+# 5. TITEL EN DE REST VAN JE CODE
 st.title("Suitability for Senior Housing Development")
 
-# --- SIDEBAR: GEWICHTEN ---
-st.sidebar.header("Weights for Selection Criteria")
-st.sidebar.write("Default values are results from an Analytic Hierarchy Process (AHP) survey conducted among experts in the field of senior housing.")
+if df is not None:
+    st.sidebar.header("Weights for Selection Criteria")
 
 # 1. AHP basiswaarden (Hoofdcriteria)
 ahp_main = {
@@ -101,49 +166,136 @@ st.sidebar.button("Reset to default AHP Weights", on_click=reset_weights)
 
 # --- HOOFD SLIDERS ---
 w_amenities = st.sidebar.slider("Accessibility of daily amenities", 0.0, 1.0, key="w_amenities", step=0.001)
+st.sidebar.markdown("""
+    <div style='margin-top: -20px; margin-bottom: 20px;'>
+        <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 25%;'>▲ Default: 0.25</p>
+    </div>
+""", unsafe_allow_html=True)
 with st.sidebar.expander("Weights for sub-criteria: Accessibility of daily amenities"):
-    s_pt = st.slider("Public Transport", 0.0, 1.0, key="s_pt", step=0.01)
-    s_sm = st.slider("Supermarket", 0.0, 1.0, key="s_sm", step=0.01)
-    s_gp = st.slider("General practitioner", 0.0, 1.0, key="s_gp", step=0.01)
-    st.text("Default AHP values: 0.39, 0.30, 0.32")
+    s_pt = st.slider("Public Transport", 0.0, 1.0, key="s_pt", step=0.01, help="Proximity and frequency of public transport options")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 30%;'>▲ Default: 0.30</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_sm = st.slider("Supermarket", 0.0, 1.0, key="s_sm", step=0.01, help="Distance to closest supermarket")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 51%;'>▲ Default: 0.51</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_gp = st.slider("General practitioner", 0.0, 1.0, key="s_gp", step=0.01, help="Distance to closest general practitioner")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 18%;'>▲ Default: 0.18</p>
+        </div>
+    """, unsafe_allow_html=True)
 
 w_walkability = st.sidebar.slider("Neighborhood walkability", 0.0, 1.0, key="w_walkability", step=0.001)
+st.sidebar.markdown("""
+    <div style='margin-top: -20px; margin-bottom: 20px;'>
+        <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 10%;'>▲ Default: 0.10</p>
+    </div>
+""", unsafe_allow_html=True)
 with st.sidebar.expander("Weights for sub-criteria: Neighborhood walkability"):
-    s_cr = st.slider("Safe road Crossings", 0.0, 1.0, key="s_cr", step=0.01)
-    s_be = st.slider("Benches", 0.0, 1.0, key="s_be", step=0.01)
-    s_li = st.slider("Street Lighting", 0.0, 1.0, key="s_li", step=0.01)
-    st.text("Default AHP values: 0.30, 0.51, 0.18")
+    s_cr = st.slider("Safe road Crossings", 0.0, 1.0, key="s_cr", step=0.01, help="Number of safe road crossings at dangerous roads")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 42%;'>▲ Default: 0.42</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_be = st.slider("Benches", 0.0, 1.0, key="s_be", step=0.01, help="Number of benches along walking infrastructure")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 26%;'>▲ Default: 0.26</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_li = st.slider("Street Lighting", 0.0, 1.0, key="s_li", step=0.01, help="Number of street lighting fixtures along walking infrastructure")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 32%;'>▲ Default: 0.32</p>
+        </div>
+    """, unsafe_allow_html=True)
 
 w_environment = st.sidebar.slider("Physical living environment", 0.0, 1.0, key="w_environment", step=0.001)
+st.sidebar.markdown("""
+    <div style='margin-top: -20px; margin-bottom: 20px;'>
+        <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 13%;'>▲ Default: 0.13</p>
+    </div>
+""", unsafe_allow_html=True)
 with st.sidebar.expander("Weights for sub-criteria: Physical living environment"):
-    s_gr = st.slider("Quality and Quantity of Green", 0.0, 1.0, key="s_gr", step=0.01)
-    s_no = st.slider("Noise Level", 0.0, 1.0, key="s_no", step=0.01)
-    s_ai = st.slider("Air Quality", 0.0, 1.0, key="s_ai", step=0.01)
-    st.text("Default AHP values: 0.48, 0.24, 0.28")
+    s_gr = st.slider("Quality and Quantity of Green", 0.0, 1.0, key="s_gr", step=0.01, help="Distance to the closest park and the amount of green space in the neighborhood")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 48%;'>▲ Default: 0.48</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_no = st.slider("Noise Level", 0.0, 1.0, key="s_no", step=0.01, help="Noise level at the plot")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 24%;'>▲ Default: 0.24</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_ai = st.slider("Air Quality", 0.0, 1.0, key="s_ai", step=0.01, help="Air quality (measured in NO2 and PM2.5) at the plot")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 28%;'>▲ Default: 0.28</p>
+        </div>
+    """, unsafe_allow_html=True)
 
 w_social = st.sidebar.slider("Social interaction and support", 0.0, 1.0, key="w_social", step=0.001)
+st.sidebar.markdown("""
+    <div style='margin-top: -20px; margin-bottom: 20px;'>
+        <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 32%;'>▲ Default: 0.32</p>
+    </div>
+""", unsafe_allow_html=True)
 with st.sidebar.expander("Weights for sub-criteria: Social interaction and support"):
-    s_in = st.slider("Social interaction", 0.0, 1.0, key="s_in", step=0.01)
-    s_co = st.slider("Social cohesion", 0.0, 1.0, key="s_co", step=0.01)
-    s_su = st.slider("Social support", 0.0, 1.0, key="s_su", step=0.01)
-    st.text("Default AHP values: 0.39, 0.30, 0.32")
+    s_in = st.slider("Social interaction", 0.0, 1.0, key="s_in", step=0.01, help="The number of places for social interaction (e.g. community centers, cafes) within a 500m radius of the plot")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 39%;'>▲ Default: 0.39</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_co = st.slider("Social cohesion", 0.0, 1.0, key="s_co", step=0.01, help="The social cohesion of the neighborhood, measured through a survey among local residents")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 30%;'>▲ Default: 0.30</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_su = st.slider("Social support", 0.0, 1.0, key="s_su", step=0.01, help="The availability of places for social support (e.g. elderly day care centers) within a 500m radius of the plot")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 32%;'>▲ Default: 0.32</p>
+        </div>
+    """, unsafe_allow_html=True)
 
 w_safety = st.sidebar.slider("Safety", 0.0, 1.0, key="w_safety", step=0.001)
+st.sidebar.markdown("""
+    <div style='margin-top: -20px; margin-bottom: 20px;'>
+        <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 20%;'>▲ Default: 0.20</p>
+    </div>
+""", unsafe_allow_html=True)
 with st.sidebar.expander("Weights for sub-criteria: Safety"):
-    s_cm = st.slider("Crime committed", 0.0, 1.0, key="s_cm", step=0.01)
-    s_ns = st.slider("Perceived Safety", 0.0, 1.0, key="s_ns", step=0.01)
-    s_ts = st.slider("Traffic Safety", 0.0, 1.0, key="s_ts", step=0.01)
-    st.text("Default AHP values: 0.12, 0.55, 0.33")
+    s_cm = st.slider("Crime committed", 0.0, 1.0, key="s_cm", step=0.01, help="Number of crimes committed in the neighborhood")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 12%;'>▲ Default: 0.12</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_ns = st.slider("Perceived Safety", 0.0, 1.0, key="s_ns", step=0.01, help="The perceived level of safety in the neighborhood")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 55%;'>▲ Default: 0.55</p>
+        </div>
+    """, unsafe_allow_html=True)
+    s_ts = st.slider("Traffic Safety", 0.0, 1.0, key="s_ts", step=0.01, help="The perceived safety of traffic in the neighborhood")
+    st.markdown("""
+        <div style='margin-top: -20px; margin-bottom: 10px;'>
+            <p style='color: #FF4B4B; font-size: 0.8rem; padding-left: 33%;'>▲ Default: 0.33</p>
+        </div>
+    """, unsafe_allow_html=True)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("Default AHP Weights main criteria")
-
-# Hoofdcriteria
-st.sidebar.markdown(f"🛒 Accesibility of daily amenities: {ahp_main['amen']:.3f}")
-st.sidebar.markdown(f"🚶 Neighborhood walkability: {ahp_main['walk']:.3f}")
-st.sidebar.markdown(f"🌳 Physical living environment: {ahp_main['env']:.3f}")
-st.sidebar.markdown(f"🤝 Social interaction and support: {ahp_main['soc']:.3f}")
-st.sidebar.markdown(f"🛡️ Safety: {ahp_main['saf']:.3f}")
+st.sidebar.write("Default values are results from an Analytic Hierarchy Process (AHP) survey conducted among experts in the field of senior housing.")
 # --- DYNAMISCHE BEREKENING ---
 
 # Bereken eerst de 5 tussen-scores op basis van de sub-sliders
@@ -522,7 +674,7 @@ if 'geselecteerd' in locals() and geselecteerd is not None:
         st.markdown("---")
         m1, m2, m3 = st.columns(3)
         m1.metric("Crimes Committed", f"{sub_scores[0]:.1f}")
-        m2.metric("Neighborhood Safety", f"{sub_scores[1]:.1f}")
-        m3.metric("Traffic Safety", f"{sub_scores[2]:.1f}")
+        m2.metric("Perceived Neighborhood Safety", f"{sub_scores[1]:.1f}")
+        m3.metric("Perceived Traffic Safety", f"{sub_scores[2]:.1f}")
 
         st.info(f"**Suitability Score** = (({sub_scores[0]:.1f} × {s_cm:.2f}) + ({sub_scores[1]:.1f} × {s_ns:.2f}) + ({sub_scores[2]:.1f} × {s_ts:.2f})) / {total_weights:.2f} = **{current_score:.1f}**")
